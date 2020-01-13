@@ -1,0 +1,488 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(eval = FALSE)
+
+require("knitr")
+opts_knit$set(root.dir = 'D:/defne/Documents/BC/TVO/TnSeq_RNASeq_Evo/New Experiments/')
+```
+
+Basic set up
+```{r}
+exptsheet <- read.csv('exptsheet121319.csv', header=T, stringsAsFactors = F)
+
+annot <- read.csv('Annotation_3Strains_Cleaned.csv', header=T, stringsAsFactors = F)
+annot_base <- annot[,c('D39.old', 'TIGR4.old', 'TAIWAN.19F.old')]
+
+
+source('Entropy/threshold_classify.R')
+source('D:/defne/Documents/BC/TVO/Metabolic Models/RCC analysis/T4/RCC_functions/make_RNAseq_df.R')
+
+library(caret)
+
+library(PRROC)
+```
+
+
+## Single timepoint entropy
+```{r}
+for (i in c(1:nrow(exptsheet))){
+  #read the data
+  rnaseqfile <- exptsheet$RNAseqFile[i]
+  RNAseq <- read.csv(rnaseqfile, 
+                   header=T, stringsAsFactors=F)
+  RNAseq$log2FoldChange<- as.numeric(as.character(RNAseq$log2FoldChange))
+  #compute entropy
+  exptsheet$H.DE[i] <- log(2*pi*exp(1)*var(RNAseq$log2FoldChange, na.rm=T))
+}
+
+H_single <- exptsheet
+H_single$Survive <- as.logical(H_single$Survive)
+#using Gorup=="Train" as training set and Grou=="Test/Test2" as test
+entropy_1tp_classifier <- threshold_classify(H_single$H.DE[H_single$Group=='Train'],
+                                          as.factor(H_single$Survive[H_single$Group=='Train']))
+H.t <- entropy_1tp_classifier$threshold
+H_single$Prediction <- H_single$H.DE<H.t
+write.csv(H_single[,c(2:7,9,12:16)], 'Dec19/NewDataDec19_code/H1tp_predictions.csv', row.names=F)
+
+# record threshold and confusion matrices
+sink('Dec19/NewDataDec19_code/H1tp_CMs.txt')
+cat("Threshold: ")
+cat(H.t)
+cat("\n\n\nTRAINING SET\n")
+confusionMatrix(as.factor(H_single$Prediction)[H_single$Group=="Train"], as.factor(H_single$Survive[H_single$Group=="Train"]), positive = "TRUE")
+cat("\n\n\nTEST SET\n")
+confusionMatrix(as.factor(H_single$Prediction)[H_single$Group!="Train"], as.factor(H_single$Survive[H_single$Group!="Train"]), positive = "TRUE")
+sink()
+
+
+#line plot Fig 4E
+ggplot(H_single[H_single$Group=='Train',], aes(x=Time, y=H.DE, group=Experiment, col=Survive))+geom_line()+
+  geom_hline(yintercept = H.t, col='red',linetype = "dashed" )+
+  facet_wrap(.~AB, ncol=4)+theme_bw()+labs(y="Entropy")
+ggsave('Dec19/NewDataDec19_code/H1tp_train_lineplot.svg', width=8, height=5, units="in")
+
+ggplot(H_single[H_single$Group!='Train',], aes(x=Time, y=H.DE, group=Experiment, col=Survive))+geom_line()+
+  geom_hline(yintercept = H.t, col='red',linetype = "dashed" )+
+  facet_wrap(.~AB, ncol=4)+theme_bw()+labs(y="Entropy")
+ggsave('Dec19/NewDataDec19_code/H1tp_test_lineplot.svg', width=8, height=5, units="in")
+
+
+# ROC and PR curves
+roc_train <- roc.curve(H_single$H.DE[H_single$Survive=="FALSE" & H_single$Group=="Train"],
+                       H_single$H.DE[H_single$Survive=="TRUE" & H_single$Group=="Train"], curve=TRUE)
+roc_test <- roc.curve(H_single$H.DE[H_single$Survive=="FALSE" & H_single$Group!="Train"],
+                       H_single$H.DE[H_single$Survive=="TRUE" & H_single$Group!="Train"], curve=TRUE)
+
+svg('Dec19/NewDataDec19_code/H1tp_ROC.svg')
+plot(roc_train, color="black", main="Single timepoint model", auc.main = FALSE)
+plot(roc_test, color="red", add=TRUE)
+dev.off()
+
+
+pr_train <- pr.curve(H_single$H.DE[H_single$Survive=="FALSE" & H_single$Group=="Train"],
+                       H_single$H.DE[H_single$Survive=="TRUE" & H_single$Group=="Train"], curve=TRUE)
+pr_test <- pr.curve(H_single$H.DE[H_single$Survive=="FALSE" & H_single$Group!="Train"],
+                       H_single$H.DE[H_single$Survive=="TRUE" & H_single$Group!="Train"], curve=TRUE)
+
+svg('Dec19/NewDataDec19_code/H1tp_PR.svg')
+plot(pr_train, color="black", main="Single timepoint model", auc.main = FALSE)
+plot(pr_test, color="red", add=TRUE)
+dev.off()
+
+sink('Dec19/NewDataDec19_code/H1tp_AUC.txt')
+cat('ROC TRAIN\n')
+roc_train
+cat('\n\n\nROC_TEST\n')
+roc_test
+cat('\n\n\nPR_TRAIN\n')
+pr_train
+cat('\n\n\nPR_TEST\n')
+pr_test
+sink()
+
+
+# barplots (Fig4F,G)
+H_single$H1_temp <- H_single$H.DE - H.t
+axislabels_H1tp <- c(-4, -2, 0, round(H.t,2), 4)
+axisbreaks_H1tp <- axislabels_H1tp-H.t
+
+H_barplot_group <- function(df, mygroup, plotvar, axlabels, axbreaks, mytitle){
+  df <- df[mygroup,]
+  acc <- sum(df$Prediction==df$Survive)/nrow(df)
+  acc.str <- paste0('Accuracy = ', round(acc,2))
+  df <- df[order(df[plotvar]),]
+  df$Survive <- as.factor(df$Survive)
+  df['Index'] <- c(1:nrow(df))
+  ggplot(df, aes_string(x='Index', y=plotvar, fill='Survive'))+
+    geom_bar(stat = "identity")+theme_classic()+
+    scale_y_continuous(breaks=axbreaks, labels=axlabels)+
+    geom_text(x=1, y=axbreaks[4]+0.5, label=acc.str, hjust=0)+
+    labs(x=" ", y="Entropy", title = mytitle)
+}
+H_barplot_group(H_single, H_single$Group=="Train", 
+                "H1_temp", axislabels_H1tp, axisbreaks_H1tp,
+                "Single timepoint, Training set")
+ggsave('Dec19/NewDataDec19_code/H1tp_Training_all.svg')
+
+H_barplot_group(H_single, H_single$Group!="Train", 
+                "H1_temp", axislabels_H1tp, axisbreaks_H1tp,
+                "Single timepoint, Test set")
+ggsave('Dec19/NewDataDec19_code/H1tp_Test_all.svg')
+
+
+H_barplot_group(H_single, H_single$Group=="Train" & H_single$Time < 65, 
+                "H1_temp", axislabels_H1tp, axisbreaks_H1tp,
+                "Single timepoint, Training set, early timepoints")
+ggsave('Dec19/NewDataDec19_code/H1tp_Training_early.svg')
+
+H_barplot_group(H_single, H_single$Group!="Train"& H_single$Time < 65, 
+                "H1_temp", axislabels_H1tp, axisbreaks_H1tp,
+                "Single timepoint, Test set, early timepoints")
+ggsave('Dec19/NewDataDec19_code/H1tp_Test_early.svg')
+
+
+H_barplot_group(H_single, H_single$Group=="Train" & H_single$Time > 65, 
+                "H1_temp", axislabels_H1tp, axisbreaks_H1tp,
+                "Single timepoint, Training set, late timepoints")
+ggsave('Dec19/NewDataDec19_code/H1tp_Training_late.svg')
+
+H_barplot_group(H_single, H_single$Group!="Train"& H_single$Time > 65, 
+                "H1_temp", axislabels_H1tp, axisbreaks_H1tp,
+                "Single timepoint, Test set, late timepoints")
+ggsave('Dec19/NewDataDec19_code/H1tp_Test_late.svg')
+
+```
+
+
+## Timecourse entropy - Model 1
+This model uses variances across all genes
+```{r}
+get_entropy1_2tp <- function(myexpt){
+  print(myexpt)
+  short_expts <- c('T4_VNC', 'D39_GLY', 'D39_VAL', 'T4_GLY', 'T4_URA', 'T4_VAL', 'U-D39_URA', 'V-D39_VAL')
+  if (myexpt %in% short_expts){
+      thisexpt <- exptsheet[exptsheet$Experiment==myexpt & exptsheet$Time %in% c(30, 90), c('Time','RNAseqFile')]
+
+  }else{
+      thisexpt <- exptsheet[exptsheet$Experiment==myexpt & exptsheet$Time %in% c(30, 120), c('Time','RNAseqFile')]
+
+  }
+  thisRNAseq <- make_RNAseq_df('./',thisexpt)
+  thisRNAonly <- as.matrix(thisRNAseq[complete.cases(thisRNAseq), grep('^l2FC', names(thisRNAseq))])
+  
+  n<- nrow(thisRNAonly)
+  K <- cov(t(thisRNAonly))
+  Hlist <- log(diag(K))
+  H <- mean(Hlist)
+  return(H)
+}
+
+
+x <- sapply(unique(exptsheet$Experiment), get_entropy1_2tp)
+entropy_v1_2tp <- data.frame('Experiment' = unique(exptsheet$Experiment),
+                                 'Entropy'=x)
+entropy_v1_2tp <- merge(entropy_v1_2tp, exptsheet[,c('Experiment','Survive', 'Strain', 'AB', 'Adapted','Concentration', 'Group')], all.x=T, all.y=F)
+entropy_v1_2tp <- unique(entropy_v1_2tp)
+
+entropy_v1_2tp$Survive <- as.logical(entropy_v1_2tp$Survive)
+entropy1_2tp_classifier <- threshold_classify(entropy_v1_2tp$Entropy[entropy_v1_2tp$Group=='Train'],
+                                          as.factor(entropy_v1_2tp$Survive[entropy_v1_2tp$Group=='Train']))
+
+H1_2tp.t <- entropy1_2tp_classifier$threshold
+entropy_v1_2tp$Prediction <- entropy_v1_2tp$Entropy<H1_2tp.t
+
+write.csv(entropy_v1_2tp, 'Dec19/NewDataDec19_code/H2tp_model1_predictions.csv', row.names=F)
+
+
+
+# record threshold and confusion matrices
+sink('Dec19/NewDataDec19_code/H2tp_model1_CMs.txt')
+cat("Threshold: ")
+cat(H1_2tp.t)
+cat("\n\n\nTRAINING SET\n")
+confusionMatrix(as.factor(entropy_v1_2tp$Prediction)[entropy_v1_2tp$Group=="Train"], 
+                as.factor(entropy_v1_2tp$Survive[entropy_v1_2tp$Group=="Train"]), positive = "TRUE")
+cat("\n\n\nTEST SET\n")
+confusionMatrix(as.factor(entropy_v1_2tp$Prediction)[entropy_v1_2tp$Group!="Train"], 
+                as.factor(entropy_v1_2tp$Survive[entropy_v1_2tp$Group!="Train"]), positive = "TRUE")
+sink()
+
+
+
+# ROC and PR curves
+roc_train <- roc.curve(entropy_v1_2tp$Entropy[entropy_v1_2tp$Survive=="FALSE" & entropy_v1_2tp$Group=="Train"],
+                       entropy_v1_2tp$Entropy[entropy_v1_2tp$Survive=="TRUE" & entropy_v1_2tp$Group=="Train"], curve=TRUE)
+roc_test <- roc.curve(entropy_v1_2tp$Entropy[entropy_v1_2tp$Survive=="FALSE" & entropy_v1_2tp$Group!="Train"],
+                       entropy_v1_2tp$Entropy[entropy_v1_2tp$Survive=="TRUE" & entropy_v1_2tp$Group!="Train"], curve=TRUE)
+
+svg('Dec19/NewDataDec19_code/H2tp_model1_ROC.svg')
+plot(roc_train, color="black", main="Multi-timepoint model 1", auc.main = FALSE)
+plot(roc_test, color="red", add=TRUE)
+dev.off()
+
+pr_train <- pr.curve(entropy_v1_2tp$Entropy[entropy_v1_2tp$Survive=="FALSE" & entropy_v1_2tp$Group=="Train"],
+                       entropy_v1_2tp$Entropy[entropy_v1_2tp$Survive=="TRUE" & entropy_v1_2tp$Group=="Train"], curve=TRUE)
+pr_test <- pr.curve(entropy_v1_2tp$Entropy[entropy_v1_2tp$Survive=="FALSE" & entropy_v1_2tp$Group!="Train"],
+                       entropy_v1_2tp$Entropy[entropy_v1_2tp$Survive=="TRUE" & entropy_v1_2tp$Group!="Train"], curve=TRUE)
+
+svg('Dec19/NewDataDec19_code/H2tp_model1_PR.svg')
+plot(pr_train, color="black", main="Multi-timepoint model 1", auc.main = FALSE)
+plot(pr_test, color="red", add=TRUE)
+dev.off()
+
+sink('Dec19/NewDataDec19_code/H2tp_model1_AUC.txt')
+cat('ROC TRAIN\n')
+roc_train
+cat('\n\n\nROC_TEST\n')
+roc_test
+cat('\n\n\nPR_TRAIN\n')
+pr_train
+cat('\n\n\nPR_TEST\n')
+pr_test
+sink()
+
+
+# barplots (Fig4B,C,D)
+entropy_v1_2tp$H1_temp <- entropy_v1_2tp$Entropy - H1_2tp.t
+axislabels_H2tp_1 <- c(-6, -4, round(H1_2tp.t,2), -2, 0)
+axisbreaks_H2tp_1 <- axislabels_H2tp_1-H1_2tp.t
+
+H_barplot_group(entropy_v1_2tp, entropy_v1_2tp$Group=="Train", 
+                "H1_temp", axislabels_H2tp_1, axisbreaks_H2tp_1,
+                "Model 1, Training set")
+ggsave('Dec19/NewDataDec19_code/H2tp_model1_Train.svg')
+H_barplot_group(entropy_v1_2tp, entropy_v1_2tp$Group!="Train", 
+                "H1_temp", axislabels_H2tp_1, axisbreaks_H2tp_1,
+                "Model 1, Test set")
+ggsave('Dec19/NewDataDec19_code/H2tp_model1_Test.svg')
+```
+
+## Timecourse entropy - Model 2
+This model uses covarinaces across all genes
+```{r}
+get_entropy2_2tp <- function(myexpt){
+  print(myexpt)
+  short_expts <- c('T4_VNC', 'D39_GLY', 'D39_VAL', 'T4_GLY', 'T4_URA', 'T4_VAL', 'U-D39_URA', 'V-D39_VAL')
+  if (myexpt %in% short_expts){
+      thisexpt <- exptsheet[exptsheet$Experiment==myexpt & exptsheet$Time %in% c(30, 90), c('Time','RNAseqFile')]
+
+  }else{
+      thisexpt <- exptsheet[exptsheet$Experiment==myexpt & exptsheet$Time %in% c(30, 120), c('Time','RNAseqFile')]
+
+  }
+  thisRNAseq <- make_RNAseq_df('./',thisexpt)
+  thisRNAonly <- as.matrix(thisRNAseq[complete.cases(thisRNAseq), grep('^l2FC', names(thisRNAseq))])
+  n<- nrow(thisRNAonly)
+  K <- cov(t(thisRNAonly))
+  H <- determinant(K, logarithm=TRUE)$modulus
+  return(H)
+}
+
+
+x <- sapply(unique(exptsheet$Experiment), get_entropy2_2tp)
+entropy_v2_2tp <- data.frame('Experiment' = unique(exptsheet$Experiment),
+                                 'Entropy'=x)
+entropy_v2_2tp <- merge(entropy_v2_2tp, exptsheet[,c('Experiment','Survive', 'Strain', 'AB', 'Adapted','Concentration', 'Group')], all.x=T, all.y=F)
+entropy_v2_2tp <- unique(entropy_v2_2tp)
+
+entropy_v2_2tp$Survive <- as.logical(entropy_v2_2tp$Survive)
+entropy2_2tp_classifier <- threshold_classify(entropy_v2_2tp$Entropy[entropy_v2_2tp$Group=='Train'],
+                                          as.factor(entropy_v2_2tp$Survive[entropy_v2_2tp$Group=='Train']))
+
+H2_2tp.t <- entropy2_2tp_classifier$threshold
+entropy_v2_2tp$Prediction <- entropy_v2_2tp$Entropy<H2_2tp.t
+
+write.csv(entropy_v2_2tp, 'Dec19/NewDataDec19_code/H2tp_model2_predictions.csv', row.names=F)
+
+
+
+# record threshold and confusion matrices
+sink('Dec19/NewDataDec19_code/H2tp_model2_CMs.txt')
+cat("Threshold: ")
+cat(H2_2tp.t)
+cat("\n\n\nTRAINING SET\n")
+confusionMatrix(as.factor(entropy_v2_2tp$Prediction)[entropy_v2_2tp$Group=="Train"], 
+                as.factor(entropy_v2_2tp$Survive[entropy_v2_2tp$Group=="Train"]), positive = "TRUE")
+cat("\n\n\nTEST SET\n")
+confusionMatrix(as.factor(entropy_v2_2tp$Prediction)[entropy_v2_2tp$Group!="Train"], 
+                as.factor(entropy_v2_2tp$Survive[entropy_v2_2tp$Group!="Train"]), positive = "TRUE")
+sink()
+
+
+
+# ROC and PR curves
+roc_train <- roc.curve(entropy_v2_2tp$Entropy[entropy_v2_2tp$Survive=="FALSE" & entropy_v2_2tp$Group=="Train"],
+                       entropy_v2_2tp$Entropy[entropy_v2_2tp$Survive=="TRUE" & entropy_v2_2tp$Group=="Train"], curve=TRUE)
+roc_test <- roc.curve(entropy_v2_2tp$Entropy[entropy_v2_2tp$Survive=="FALSE" & entropy_v2_2tp$Group!="Train"],
+                       entropy_v2_2tp$Entropy[entropy_v2_2tp$Survive=="TRUE" & entropy_v2_2tp$Group!="Train"], curve=TRUE)
+
+svg('Dec19/NewDataDec19_code/H2tp_model2_ROC.svg')
+plot(roc_train, color="black", main="Multi-timepoint model 2", auc.main = FALSE)
+plot(roc_test, color="red", add=TRUE)
+dev.off()
+
+pr_train <- pr.curve(entropy_v2_2tp$Entropy[entropy_v2_2tp$Survive=="FALSE" & entropy_v2_2tp$Group=="Train"],
+                       entropy_v2_2tp$Entropy[entropy_v2_2tp$Survive=="TRUE" & entropy_v2_2tp$Group=="Train"], curve=TRUE)
+pr_test <- pr.curve(entropy_v2_2tp$Entropy[entropy_v2_2tp$Survive=="FALSE" & entropy_v2_2tp$Group!="Train"],
+                       entropy_v2_2tp$Entropy[entropy_v2_2tp$Survive=="TRUE" & entropy_v2_2tp$Group!="Train"], curve=TRUE)
+
+svg('Dec19/NewDataDec19_code/H2tp_model2_PR.svg')
+plot(pr_train, color="black", main="Multi-timepoint model 2", auc.main = FALSE)
+plot(pr_test, color="red", add=TRUE)
+dev.off()
+
+sink('Dec19/NewDataDec19_code/H2tp_model2_AUC.txt')
+cat('ROC TRAIN\n')
+roc_train
+cat('\n\n\nROC_TEST\n')
+roc_test
+cat('\n\n\nPR_TRAIN\n')
+pr_train
+cat('\n\n\nPR_TEST\n')
+pr_test
+sink()
+
+
+# barplots (Fig4B,C,D)
+entropy_v2_2tp$H2_temp <- entropy_v2_2tp$Entropy - H2_2tp.t
+axislabels_H2tp_2 <- c(-90000,-87500, -85000, round(H2_2tp.t,2), -80000,-77500)
+axisbreaks_H2tp_2 <- axislabels_H2tp_2-H2_2tp.t
+
+H_barplot_group(entropy_v2_2tp, entropy_v2_2tp$Group=="Train", 
+                "H2_temp", axislabels_H2tp_2, axisbreaks_H2tp_2,
+                "Model 2, Training set")
+ggsave('Dec19/NewDataDec19_code/H2tp_model2_Train.svg')
+H_barplot_group(entropy_v2_2tp, entropy_v2_2tp$Group!="Train", 
+                "H2_temp", axislabels_H2tp_2, axisbreaks_H2tp_2,
+                "Model 2, Test set")
+ggsave('Dec19/NewDataDec19_code/H2tp_model2_Test.svg')
+```
+
+## Timecourse entropy - Model 3
+This model uses covariances, but after regularization of the inverse covariance matrix. 
+The regularization is done on a server. Here, we read in the data and pick the regularization level that gives the best prediction on the training set. 
+```{r}
+entropy_v3_2tp <- read.csv('Dec19/NewDataDec19_code/Entropy/entropy_4_1219.csv', header=T, stringsAsFactors = F)
+lams <- seq(5,0,-0.05)
+
+Ent_v3_summary <- data.frame()
+for (rhoval in lams){
+  tryCatch({
+    entropy_v3_2tp_output <- entropy_v3_2tp[entropy_v3_2tp$Rho==rhoval,]
+    entropy_v3_2tp_output <- merge(entropy_v3_2tp_output, exptsheet[,c('Experiment', 'Survive', 'Group')], by="Experiment", all.x=T, all.y=F, sort=F)
+    
+    entropy_v3_2tp_train <- entropy_v3_2tp_output[entropy_v3_2tp_output$Group=='Train',]
+    entropy_v3_2tp_train <- unique(entropy_v3_2tp_train)
+    entropy_v3_2tp_train <- entropy_v3_2tp_train[complete.cases(entropy_v3_2tp_train),]
+    #entropy_v3_2tp_test <- entropy_v3_2tp_output[entropy_v3_2tp_output$Group!='Train',]
+    H_clf <- threshold_classify(entropy_v3_2tp_train$H_pdON, as.factor(as.logical(entropy_v3_2tp_train$Survive)))
+    x <- as.data.frame(t(as.data.frame(H_clf$cm$overall)))
+    x$Rho <- rhoval
+    x$Threshold <- H_clf$threshold
+    Ent_v3_summary <- rbind(Ent_v3_summary, x)
+  }, error = function(e){print(e)})
+
+}
+
+bestrho <- Ent_v3_summary$Rho[which.max(Ent_v3_summary$Accuracy)]
+ggplot(Ent_v3_summary, aes(x=Rho, y=Accuracy))+geom_line()+theme_bw()+labs(y="Training Set Accuracy")+
+  geom_vline(xintercept = bestrho, col='red',linetype = "dashed" )
+ggsave('Dec19/NewDataDec19_code/Entropy/Accuracy_vs_Rho.svg')
+
+
+write.csv(Ent_v3_summary,'Dec19/NewDataDec19_code/Entropy/H2tp_model3_rho_vs_performance.csv', row.names = F)
+
+
+
+
+entropy_v3_2tp_best <- entropy_v3_2tp[entropy_v3_2tp$Rho==bestrho,]
+# drop NAs
+entropy_v3_2tp_best <- entropy_v3_2tp_best[complete.cases(entropy_v3_2tp_best),]
+
+entropy_v3_2tp_best <- merge(entropy_v3_2tp_best, exptsheet[,c('Experiment','Survive', 'Strain', 'AB', 'Adapted','Concentration', 'Group')], all.x=T, all.y=F)
+entropy_v3_2tp_best <- unique(entropy_v3_2tp_best)
+
+entropy_v3_2tp_best$Survive <- as.logical(entropy_v3_2tp_best$Survive)
+entropy_v3_2tp_best_classifier <- threshold_classify(entropy_v3_2tp_best$H_pdON[entropy_v3_2tp_best$Group=='Train'],
+                                          as.factor(entropy_v3_2tp_best$Survive[entropy_v3_2tp_best$Group=='Train']))
+
+H3_2tp.t <- entropy_v3_2tp_best_classifier$threshold
+entropy_v3_2tp_best$Prediction <- entropy_v3_2tp_best$H_pdON<H3_2tp.t
+
+write.csv(entropy_v3_2tp_best, 'Dec19/NewDataDec19_code/Entropy/H2tp_model3_predictions.csv', row.names=F)
+
+
+
+# record threshold and confusion matrices
+sink('Dec19/NewDataDec19_code/Entropy/H2tp_model3_CMs.txt')
+cat("Threshold: ")
+cat(H3_2tp.t)
+cat("\n\n\nTRAINING SET\n")
+confusionMatrix(as.factor(entropy_v3_2tp_best$Prediction)[entropy_v3_2tp_best$Group=="Train"], 
+                as.factor(entropy_v3_2tp_best$Survive[entropy_v3_2tp_best$Group=="Train"]), positive = "TRUE")
+cat("\n\n\nTEST SET\n")
+confusionMatrix(as.factor(entropy_v3_2tp_best$Prediction)[entropy_v3_2tp_best$Group!="Train"], 
+                as.factor(entropy_v3_2tp_best$Survive[entropy_v3_2tp_best$Group!="Train"]), positive = "TRUE")
+sink()
+
+
+
+# ROC and PR curves
+roc_train <- roc.curve(entropy_v3_2tp_best$H_pdON[entropy_v3_2tp_best$Survive=="FALSE" & entropy_v3_2tp_best$Group=="Train"],
+                       entropy_v3_2tp_best$H_pdON[entropy_v3_2tp_best$Survive=="TRUE" & entropy_v3_2tp_best$Group=="Train"], curve=TRUE)
+roc_test <- roc.curve(entropy_v3_2tp_best$H_pdON[entropy_v3_2tp_best$Survive=="FALSE" & entropy_v3_2tp_best$Group!="Train"],
+                       entropy_v3_2tp_best$H_pdON[entropy_v3_2tp_best$Survive=="TRUE" & entropy_v3_2tp_best$Group!="Train"], curve=TRUE)
+
+svg('Dec19/NewDataDec19_code/Entropy/H2tp_model3_ROC.svg')
+plot(roc_train, color="black", main="Multi-timepoint model 3", auc.main = FALSE)
+plot(roc_test, color="red", add=TRUE)
+dev.off()
+
+pr_train <- pr.curve(entropy_v3_2tp_best$H_pdON[entropy_v3_2tp_best$Survive=="FALSE" & entropy_v3_2tp_best$Group=="Train"],
+                       entropy_v3_2tp_best$H_pdON[entropy_v3_2tp_best$Survive=="TRUE" & entropy_v3_2tp_best$Group=="Train"], curve=TRUE)
+pr_test <- pr.curve(entropy_v3_2tp_best$H_pdON[entropy_v3_2tp_best$Survive=="FALSE" & entropy_v3_2tp_best$Group!="Train"],
+                       entropy_v3_2tp_best$H_pdON[entropy_v3_2tp_best$Survive=="TRUE" & entropy_v3_2tp_best$Group!="Train"], curve=TRUE)
+
+svg('Dec19/NewDataDec19_code/Entropy/H2tp_model3_PR.svg')
+plot(pr_train, color="black", main="Multi-timepoint model 3", auc.main = FALSE)
+plot(pr_test, color="red", add=TRUE)
+dev.off()
+
+sink('Dec19/NewDataDec19_code/Entropy/H2tp_model3_AUC.txt')
+cat('ROC TRAIN\n')
+roc_train
+cat('\n\n\nROC_TEST\n')
+roc_test
+cat('\n\n\nPR_TRAIN\n')
+pr_train
+cat('\n\n\nPR_TEST\n')
+pr_test
+sink()
+
+
+# barplots (Fig4B,C,D)
+entropy_v3_2tp_best$H3_temp <- entropy_v3_2tp_best$H_pdON - H3_2tp.t
+axislabels_H2tp_3 <- c(1000,1100, 1200, round(H3_2tp.t,2), 1400,1500)
+axisbreaks_H2tp_3 <- axislabels_H2tp_3-H3_2tp.t
+
+H_barplot_group(entropy_v3_2tp_best, entropy_v3_2tp_best$Group=="Train", 
+                "H3_temp", axislabels_H2tp_3, axisbreaks_H2tp_3,
+                "Model 3, Training set")
+ggsave('Dec19/NewDataDec19_code/Entropy/H2tp_model3_Train.svg')
+H_barplot_group(entropy_v3_2tp_best, entropy_v3_2tp_best$Group!="Train", 
+                "H3_temp", axislabels_H2tp_3, axisbreaks_H2tp_3,
+                "Model 3, Test set")
+ggsave('Dec19/NewDataDec19_code/Entropy/H2tp_model3_Test.svg')
+```
+
+
+Save all data
+```{r}
+save.image('Dec19/NewDataDec19_code/Entropy.RData')
+```

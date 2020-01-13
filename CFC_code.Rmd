@@ -1,0 +1,382 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(eval = FALSE)
+
+require("knitr")
+opts_knit$set(root.dir = 'D:/defne/Documents/BC/TVO/TnSeq_RNASeq_Evo/New Experiments/')
+```
+
+
+
+
+## General features classifier
+Assemble the features (there's going to be 50)
+```{r}
+exptsheet <- read.csv('exptsheet121319.csv', header=T, stringsAsFactors = F)
+# select data for which we have the corresponding TnSeq files
+exptsheet <- exptsheet[exptsheet$Group!="Test2",]
+
+metadata_T4 <- read.csv('T4_metadata.csv',  header=T, stringsAsFactors = F)
+metadata_19F <- read.csv('19F_metadata.csv',  header=T, stringsAsFactors = F)
+metadata_D39 <- read.csv('D39_metadata.csv',  header=T, stringsAsFactors = F)
+
+annot <- read.csv('Annotation_3Strains_Cleaned.csv', header=T, stringsAsFactors = F)
+annot_base <- annot[,c('D39.old', 'TIGR4.old', 'TAIWAN.19F.old')]
+
+exptsheet$N.TIG <- 0
+exptsheet$N.PIG <- 0
+exptsheet$H.DE <- 0
+exptsheet$H.dW <- 0
+exptsheet$diffEss <- 0
+exptsheet$downEss <- 0
+
+
+####################################
+####################################
+# ITERATE OVER ALL ROWS IN exptsheet
+####################################
+####################################
+
+k <- nrow(exptsheet)
+DE_catSD <- data.frame()
+dW_catSD <- data.frame()
+
+for (i in c(1:k)){
+mystrain <- exptsheet$Strain[i]
+thisexpt <- exptsheet$Name[i]
+rnaseqfile <- exptsheet$RNAseqFile[i]
+tnseqfile <- exptsheet$TnseqFile[i]
+
+if (mystrain=="T4"){
+  straincol_RNA <- 'TIGR4.old'
+  straincol_Tn <- 'TIGR4.old'
+  metadata <- metadata_T4
+  straincol_meta <- 'Gene'
+  }
+if (mystrain=="19F"){
+  straincol_RNA <- 'TAIWAN.19F.old'
+  straincol_Tn <- 'TAIWAN.19F.old'
+  metadata <- metadata_19F
+  straincol_meta <- 'TAIWAN.19F.old'
+  }
+if (mystrain=="D39"){
+  straincol_RNA <- 'D39.old'
+  straincol_Tn <- 'TIGR4.old'
+  metadata <- metadata_D39
+  straincol_meta <- 'D39.old'
+  }
+
+#RNAseq
+RNAseq <- read.csv(rnaseqfile, 
+                   header=T, stringsAsFactors=F)
+RNAseq<-RNAseq[,c("Gene","log2FoldChange","padj")]
+RNAseq$padj <- as.numeric(as.character(RNAseq$padj))
+RNAseq$log2FoldChange<- as.numeric(as.character(RNAseq$log2FoldChange))
+RNAseq$Sig<-(!is.na(RNAseq$log2FoldChange)&abs(RNAseq$log2FoldChange)>1&
+                 !is.na(RNAseq$padj)&RNAseq$padj<0.05)
+			   
+#TnSeq
+thisTNdata<-read.csv(tnseqfile, 
+                   header=T, stringsAsFactors=F)
+
+# if the significant genes are already marked, use those
+if("Sig" %in% names(thisTNdata)){
+thisTNdata<-thisTNdata[,c("Gene","dW","Sig")]
+}else{
+# otherwise look at the dW, p, and insertion numbers
+thisTNdata<-thisTNdata[,c("Gene","dW","Ins1","Ins2","Df","p")]
+thisTNdata$p <- as.numeric(thisTNdata$p)
+thisTNdata$Sig<- (!is.na(thisTNdata$dW) & abs(thisTNdata$dW)>0.15 &
+				!is.na(thisTNdata$p) & thisTNdata$p<0.02 & 
+				#thisTNdata$Df >6)
+				thisTNdata$Ins1 > 3 & thisTNdata$Ins2 > 3)
+thisTNdata<-thisTNdata[,c("Gene","dW","Sig")]
+}
+TnSeq <- thisTNdata
+TnSeq$Sig <- as.logical(TnSeq$Sig)
+
+# number of TIGs and PIGs
+exptsheet$N.TIG[i] <- sum(!is.na(RNAseq$Sig) & RNAseq$Sig)
+exptsheet$N.PIG[i] <- sum(!is.na(TnSeq$Sig) & TnSeq$Sig)
+# entropy (whole genome wide)
+exptsheet$H.DE[i] <- log(2*pi*exp(1)*var(RNAseq$log2FoldChange, na.rm=T))
+exptsheet$H.dW[i] <- log(2*pi*exp(1)*var(TnSeq$dW, na.rm=T))
+
+# category specific entropy (=stdev); RNAseq
+RNAseq <- merge(RNAseq, annot[,c(straincol_RNA, 'Tag1', 'Category1')], 
+                   by.x='Gene', by.y=straincol_RNA, all.x=T, all.y=F, sort=F)
+
+catSD1 <- aggregate(log2FoldChange~Category1, data=RNAseq, sd)
+catSD1 <- setNames(data.frame(t(catSD1[,-1])), catSD1[,1])
+catSD1$Name <- thisexpt
+DE_catSD <- rbind(DE_catSD, catSD1)
+
+# category specific entropy (=stdev); TnSeq
+TnSeq <- merge(TnSeq, annot[,c(straincol_Tn, 'Tag1', 'Category1')], 
+                   by.x='Gene', by.y=straincol_Tn, all.x=T, all.y=F, sort=F)
+
+catSD2 <- aggregate(dW~Category1, data=TnSeq, sd)
+catSD2 <- setNames(data.frame(t(catSD2[,-1])), catSD2[,1])
+catSD2$Name <- thisexpt
+dW_catSD <- rbind(dW_catSD, catSD2)
+
+# downregulation of essential genes
+RNAseq <- merge(RNAseq, metadata, by.x = 'Gene', by.y = straincol_meta, all.x=T, all.y=F, sort=F)
+NdownEss <- sum(!is.na(RNAseq$log2FoldChange) & !is.na(RNAseq$Essential)& 
+                  RNAseq$log2FoldChange< -1 & RNAseq$Essential)
+diffEss <- mean(RNAseq$log2FoldChange[RNAseq$Essential==F], na.rm=T) - mean(RNAseq$log2FoldChange[RNAseq$Essential==T], na.rm=T)
+#percent of essentials that are downregulated
+pcDownEss <- NdownEss/sum(!is.na(metadata$Essential) & metadata$Essential)
+
+exptsheet$diffEss[i] <- diffEss
+exptsheet$downEss[i] <- pcDownEss
+
+}
+DE_catSD$Name <- NULL
+dW_catSD$Name <- NULL
+
+names(DE_catSD)<-paste0('DE.', names(DE_catSD))
+names(dW_catSD)<-paste0('dW.', names(dW_catSD))
+
+exptsheet <- cbind(exptsheet,DE_catSD,dW_catSD)
+
+write.csv(exptsheet, 'Dec19/NewDataDec19_code/CFC_features.csv', row.names=F)
+
+```
+
+
+Clean the features and perform feature selection
+```{r}
+CFC_data <- exptsheet[,15:64]
+CFC_data[is.na(CFC_data)] <- 0
+CFC_data_norm <- t(apply(CFC_data, 1, scale))
+colnames(CFC_data_norm) <- names(exptsheet)[15:64]
+
+#split into train and test
+CFC_train_ix <- exptsheet$Group=="Train"
+CFC_test_ix <- exptsheet$Group!="Train"
+CFC_data_norm_train <- CFC_data_norm[CFC_train_ix,]
+CFC_data_norm_test <- CFC_data_norm[CFC_test_ix,]
+
+#without crossvalidation
+fit <- glmnet(x=CFC_data_norm_train, y=exptsheet$Survive[CFC_train_ix])
+#with crossvalidation
+cvfit <- cv.glmnet(x=CFC_data_norm_train, y=exptsheet$Survive[CFC_train_ix], nfolds = 5)
+
+lbd <- cvfit$lambda.1se
+sink('Dec19/NewDataDec19_code/CFC_Lambda.txt')
+cat(lbd)
+sink()
+
+# Lasso plot
+library(plotmo)
+svg('Dec19/NewDataDec19_code/CFC_reg_featurecoefs.svg')
+plot_glmnet(fit, xvar="lambda", label=20)
+dev.off()
+
+# Error plot for CV
+svg('Dec19/NewDataDec19_code/CFC_reg_CV_deviance.svg')
+plot(cvfit, xvar="lambda")
+dev.off()
+
+# Coefficient for best model
+# using lambda 1se
+coefs_FIT <- coef(fit, s=lbd)
+coefs_FIT_df <- data.frame('Feature'= row.names(coefs_FIT)[which(coefs_FIT!=0)],
+                       'Coefficient' = coefs_FIT[which(coefs_FIT!=0)]
+                       )
+
+write.csv(coefs_FIT_df, 'Dec19/NewDataDec19_code/CFC_coefficient_lambda1se.csv', row.names=F)
+
+data_for_python <- exptsheet[,c('Name', 'Survive', 'Group', row.names(coefs_FIT)[which(coefs_FIT!=0)][2:6])]
+write.csv(data_for_python, 'Dec19/NewDataDec19_code/CFC_features_clean.csv', row.names=F)
+
+```
+
+Try the log regression model as the simplest possible thing: 
+```{r}
+
+# Performance statistics on training and test data
+# with the selected regularization strength
+sink('Dec19/NewDataDec19_code/CFC_bestlbd_glm_predictions.txt')
+# prediction results
+real_output_train <- as.logical(exptsheet$Survive[CFC_train_ix])
+prediction_train <- predict(fit, CFC_data_norm_train, lbd)
+predict_output_train <- as.logical(prediction_train>0.5)
+cm_train <- confusionMatrix(factor(predict_output_train, levels=c("TRUE", "FALSE")), as.factor(real_output_train))
+
+real_output_test <- as.logical(exptsheet$Survive[CFC_test_ix])
+prediction_test <- predict(fit, CFC_data_norm_test, lbd)
+predict_output_test <- as.logical(prediction_test>0.5)
+cm_test <- confusionMatrix(factor(predict_output_test, levels=c("TRUE", "FALSE")), as.factor(real_output_test))
+
+cat('TRAINING SET\n')
+print(cm_train)
+cat('\n\n\n')
+cat('TEST SET\n')
+print(cm_test)
+cat('\n\n\n')
+
+sink()
+
+
+```
+
+Check feature prevalence in a 5-fold crossvalidation set; 
+```{r}
+# using only the best lambda, and also keeping the folds data
+cv.glm.def <- function(x,y,lambda,geneset, nfolds=5){
+  N = nrow(x)
+  y = drop(y)
+  foldid = sample(rep(seq(nfolds), length = N))
+  
+  all_coefs_df <- data.frame()
+  for (i in seq(nfolds)){
+    which = foldid == i
+    if (is.matrix(y)){y_sub = y[!which, ]}
+    else {y_sub = y[!which]}
+    thisfit <- glmnet(x[!which, , drop = FALSE], y_sub, lambda = lambda)
+    coef(fit, s=cvfit$lambda.1se)
+    
+    this_coefs <- coef(thisfit, s=lambda)
+    selectgenes <- row.names(this_coefs) %in% geneset
+    this_coefs_df <- data.frame('Feature'= row.names(this_coefs)[which(selectgenes)],
+                         'Coefficient' = this_coefs[which(selectgenes)],
+                         'Fold'=i)
+    all_coefs_df <- rbind(all_coefs_df, this_coefs_df)
+  }
+  return(all_coefs_df)
+}
+
+selectedfeatures <- row.names(coefs_FIT)[which(coefs_FIT!=0)][2:6]
+cv_coefs <- cv.glm.def(x=CFC_data_norm_train, y=exptsheet$Survive[CFC_train_ix], lambda = lbd, geneset = selectedfeatures)
+coefs_CFC_sub <- coefs_FIT_df[,c(1:2)]
+coefs_CFC_sub$Fold <- 0
+cv_coefs <- rbind(cv_coefs, coefs_CFC_sub)
+write.csv(cv_coefs, 'Dec19/NewDataDec19_code/CFC_Feature_coefficients_CV.csv', row.names=F)
+
+
+cv_coefs_nonzero <- aggregate(Coefficient~Feature, cv_coefs[cv_coefs$Fold!=0,], function(x) sum(x!=0))
+ggplot(cv_coefs_nonzero, aes(x=Coefficient))+geom_bar(stat="count")+theme_bw()+xlab("Feature prevalence")
+ggsave('Dec19/NewDataDec19_code/CFC_Feature_prevalence.svg', width=5, height=5)
+
+```
+
+
+Using the model outputs (generated with python scikit-learn), plot ROC and PR curves
+```{r}
+CFC_predictions <- read.csv('Dec19/NewDataDec19_code/CFC_predictions.csv', header=T, stringsAsFactors = F)
+CFC_predictions$Survive <- as.logical(CFC_predictions$Survive)
+# ROC and PR curves
+roc_train_DT <- roc.curve(CFC_predictions$DT[CFC_predictions$Survive=="TRUE" & CFC_predictions$Group=="Train"],
+                       CFC_predictions$DT[CFC_predictions$Survive=="FALSE" & CFC_predictions$Group=="Train"], curve=TRUE)
+roc_test_DT <- roc.curve(CFC_predictions$DT[CFC_predictions$Survive=="TRUE" & CFC_predictions$Group!="Train"],
+                       CFC_predictions$DT[CFC_predictions$Survive=="FALSE" & CFC_predictions$Group!="Train"], curve=TRUE)
+roc_train_KNN <- roc.curve(CFC_predictions$KNN[CFC_predictions$Survive=="TRUE" & CFC_predictions$Group=="Train"],
+                       CFC_predictions$KNN[CFC_predictions$Survive=="FALSE" & CFC_predictions$Group=="Train"], curve=TRUE)
+roc_test_KNN <- roc.curve(CFC_predictions$KNN[CFC_predictions$Survive=="TRUE" & CFC_predictions$Group!="Train"],
+                       CFC_predictions$KNN[CFC_predictions$Survive=="FALSE" & CFC_predictions$Group!="Train"], curve=TRUE)
+roc_train_LR <- roc.curve(CFC_predictions$LR[CFC_predictions$Survive=="TRUE" & CFC_predictions$Group=="Train"],
+                       CFC_predictions$LR[CFC_predictions$Survive=="FALSE" & CFC_predictions$Group=="Train"], curve=TRUE)
+roc_test_LR <- roc.curve(CFC_predictions$LR[CFC_predictions$Survive=="TRUE" & CFC_predictions$Group!="Train"],
+                       CFC_predictions$LR[CFC_predictions$Survive=="FALSE" & CFC_predictions$Group!="Train"], curve=TRUE)
+roc_train_RF <- roc.curve(CFC_predictions$RF[CFC_predictions$Survive=="TRUE" & CFC_predictions$Group=="Train"],
+                       CFC_predictions$RF[CFC_predictions$Survive=="FALSE" & CFC_predictions$Group=="Train"], curve=TRUE)
+roc_test_RF <- roc.curve(CFC_predictions$RF[CFC_predictions$Survive=="TRUE" & CFC_predictions$Group!="Train"],
+                       CFC_predictions$RF[CFC_predictions$Survive=="FALSE" & CFC_predictions$Group!="Train"], curve=TRUE)
+roc_train_SVM <- roc.curve(CFC_predictions$SVM[CFC_predictions$Survive=="TRUE" & CFC_predictions$Group=="Train"],
+                       CFC_predictions$SVM[CFC_predictions$Survive=="FALSE" & CFC_predictions$Group=="Train"], curve=TRUE)
+roc_test_SVM <- roc.curve(CFC_predictions$SVM[CFC_predictions$Survive=="TRUE" & CFC_predictions$Group!="Train"],
+                       CFC_predictions$SVM[CFC_predictions$Survive=="FALSE" & CFC_predictions$Group!="Train"], curve=TRUE)
+
+
+svg('Dec19/NewDataDec19_code/CFC_train_ROC.svg')
+plot(roc_train_DT, color="red", main="Complex feature classifier, Training set", auc.main = FALSE)
+plot(roc_train_KNN, color="blue", add=TRUE)
+plot(roc_train_LR, color="green", add=TRUE)
+plot(roc_train_RF, color="orange", add=TRUE)
+plot(roc_train_SVM, color="magenta", add=TRUE)
+legend(x = "bottomright", legend = c("DT", "KNN", "LR", "RF", "SVM"),
+       col = c("red", "blue", "green", "orange", "magenta"), lty=1)
+dev.off()
+
+
+svg('Dec19/NewDataDec19_code/CFC_test_ROC.svg')
+plot(roc_test_DT, color="red", main="Complex feature classifier, Test set", auc.main = FALSE)
+plot(roc_test_KNN, color="blue", add=TRUE)
+plot(roc_test_LR, color="green", add=TRUE)
+plot(roc_test_RF, color="orange", add=TRUE)
+plot(roc_test_SVM, color="magenta", add=TRUE)
+legend(x = "bottomright", legend = c("DT", "KNN", "LR", "RF", "SVM"),
+       col = c("red", "blue", "green", "orange", "magenta"), lty=1)
+dev.off()
+
+
+pr_train_DT <- pr.curve(CFC_predictions$DT[CFC_predictions$Survive=="TRUE" & CFC_predictions$Group=="Train"],
+                       CFC_predictions$DT[CFC_predictions$Survive=="FALSE" & CFC_predictions$Group=="Train"], curve=TRUE)
+pr_test_DT <- pr.curve(CFC_predictions$DT[CFC_predictions$Survive=="TRUE" & CFC_predictions$Group!="Train"],
+                       CFC_predictions$DT[CFC_predictions$Survive=="FALSE" & CFC_predictions$Group!="Train"], curve=TRUE)
+pr_train_KNN <- pr.curve(CFC_predictions$KNN[CFC_predictions$Survive=="TRUE" & CFC_predictions$Group=="Train"],
+                       CFC_predictions$KNN[CFC_predictions$Survive=="FALSE" & CFC_predictions$Group=="Train"], curve=TRUE)
+pr_test_KNN <- pr.curve(CFC_predictions$KNN[CFC_predictions$Survive=="TRUE" & CFC_predictions$Group!="Train"],
+                       CFC_predictions$KNN[CFC_predictions$Survive=="FALSE" & CFC_predictions$Group!="Train"], curve=TRUE)
+pr_train_LR <- pr.curve(CFC_predictions$LR[CFC_predictions$Survive=="TRUE" & CFC_predictions$Group=="Train"],
+                       CFC_predictions$LR[CFC_predictions$Survive=="FALSE" & CFC_predictions$Group=="Train"], curve=TRUE)
+pr_test_LR <- pr.curve(CFC_predictions$LR[CFC_predictions$Survive=="TRUE" & CFC_predictions$Group!="Train"],
+                       CFC_predictions$LR[CFC_predictions$Survive=="FALSE" & CFC_predictions$Group!="Train"], curve=TRUE)
+pr_train_RF <- pr.curve(CFC_predictions$RF[CFC_predictions$Survive=="TRUE" & CFC_predictions$Group=="Train"],
+                       CFC_predictions$RF[CFC_predictions$Survive=="FALSE" & CFC_predictions$Group=="Train"], curve=TRUE)
+pr_test_RF <- pr.curve(CFC_predictions$RF[CFC_predictions$Survive=="TRUE" & CFC_predictions$Group!="Train"],
+                       CFC_predictions$RF[CFC_predictions$Survive=="FALSE" & CFC_predictions$Group!="Train"], curve=TRUE)
+pr_train_SVM <- pr.curve(CFC_predictions$SVM[CFC_predictions$Survive=="TRUE" & CFC_predictions$Group=="Train"],
+                       CFC_predictions$SVM[CFC_predictions$Survive=="FALSE" & CFC_predictions$Group=="Train"], curve=TRUE)
+pr_test_SVM <- pr.curve(CFC_predictions$SVM[CFC_predictions$Survive=="TRUE" & CFC_predictions$Group!="Train"],
+                       CFC_predictions$SVM[CFC_predictions$Survive=="FALSE" & CFC_predictions$Group!="Train"], curve=TRUE)
+
+
+svg('Dec19/NewDataDec19_code/CFC_train_PR.svg')
+plot(pr_train_DT, color="red", main="Complex feature classifier, Training set", auc.main = FALSE)
+plot(pr_train_KNN, color="blue", add=TRUE)
+plot(pr_train_LR, color="green", add=TRUE)
+plot(pr_train_RF, color="orange", add=TRUE)
+plot(pr_train_SVM, color="magenta", add=TRUE)
+legend(x = "bottomright", legend = c("DT", "KNN", "LR", "RF", "SVM"),
+       col = c("red", "blue", "green", "orange", "magenta"), lty=1)
+dev.off()
+
+
+svg('Dec19/NewDataDec19_code/CFC_test_PR.svg')
+plot(pr_test_DT, color="red", main="Complex feature classifier, Test set", auc.main = FALSE)
+plot(pr_test_KNN, color="blue", add=TRUE)
+plot(pr_test_LR, color="green", add=TRUE)
+plot(pr_test_RF, color="orange", add=TRUE)
+plot(pr_test_SVM, color="magenta", add=TRUE)
+legend(x = "bottomright", legend = c("DT", "KNN", "LR", "RF", "SVM"),
+       col = c("red", "blue", "green", "orange", "magenta"), lty=1)
+dev.off()
+
+# Line plot of SVM
+CFC_predictions <- cbind(CFC_predictions, exptsheet[,c('Time', 'AB', 'Experiment')])
+ggplot(CFC_predictions[CFC_predictions$Group=='Train',], aes(x=Time, y=SVM, group=Experiment, col=Survive))+geom_line()+
+  geom_hline(yintercept = 0.5, col='red',linetype = "dashed" )+
+  facet_wrap(.~AB, ncol=4)+theme_bw()+labs(y="SVM predictor")
+ggsave('Dec19/NewDataDec19_code/CFC_SVM_train_lineplot.svg', width=8, height=5, units="in")
+
+ggplot(CFC_predictions[CFC_predictions$Group!='Train',], aes(x=Time, y=SVM, group=Experiment, col=Survive))+geom_line()+
+  geom_hline(yintercept = 0.5, col='red',linetype = "dashed" )+
+  facet_wrap(.~AB, ncol=4)+theme_bw()+labs(y="SVM predictor")
+ggsave('Dec19/NewDataDec19_code/CFC_SVM_test_lineplot.svg', width=8, height=2.5, units="in")
+
+
+```
+
+Save all data
+```{r}
+save.image('Dec19/NewDataDec19_code/CFC.RData')
+```

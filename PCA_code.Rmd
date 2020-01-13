@@ -1,0 +1,253 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(eval = FALSE)
+
+require("knitr")
+opts_knit$set(root.dir = 'D:/defne/Documents/BC/TVO/TnSeq_RNASeq_Evo/New Experiments/')
+```
+
+
+##PCA
+```{r}
+## Code copied/modified from 012419
+### L2FC for all experiments
+exptsheet <- read.csv('exptsheet121319.csv', header=T, stringsAsFactors = F)
+
+annot <- read.csv('Annotation_3Strains_Cleaned.csv', header=T, stringsAsFactors = F)
+annot_base <- annot[,c('D39.old', 'TIGR4.old', 'TAIWAN.19F.old')]
+#go through all rows in the exptsheet, read the corresponding RNAseq file, 
+# and append to annot_base (using old locus tags)
+for (i in c(1:nrow(exptsheet))){
+  
+  rnafilename <- exptsheet$RNAseqFile[i]
+  strain <- exptsheet$Strain[i]
+  #make a unique name for this experiment
+  exptname <- exptsheet$Name[i]
+  print(exptname)
+  f<- read.csv(rnafilename, header=T, stringsAsFactors = F)
+  #select relevat columns
+  fsub <- f[,c('Gene', 'log2FoldChange')]
+  f$log2FoldChange <- as.numeric(f$log2FoldChange)
+  names(fsub)[2] <- exptname
+  
+  if (strain=="T4"){annot_col = "TIGR4.old"}
+  else if(strain=="D39"){annot_col = "D39.old"}
+  else if(strain=="19F"){annot_col="TAIWAN.19F.old"}
+  annot_base <- merge(annot_base, fsub, by.x=annot_col, by.y="Gene", all.x=T, all.y=T, sort=F)
+  
+}
+
+genedata <- t(annot_base[complete.cases(annot_base),4:272])
+genedata <- as.matrix(as.numeric(genedata))
+genedata[is.na(genedata)]<-0
+dim(genedata) <- c(269,1520)
+pca_gene <- prcomp(genedata, scale=T)
+
+library(factoextra)
+
+fviz_eig(pca_gene)
+fviz_pca_ind(pca_gene,
+             col.ind = "cos2", # Color by the quality of representation
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE     # Avoid text overlapping
+             )
+
+pca_res <- cbind(exptsheet, pca_gene$x)
+#ggplot(pca_res, aes(x=PC1, y=PC2))+geom_point(aes(color=Survive, size=Time))+theme_classic()+facet_grid(Strain~AB)
+#ggplot(pca_res, aes(x=PC1, y=PC2))+geom_point(aes(color=Time))+theme_bw()+scale_color_gradient(low="blue", high="red")
+#ggplot(pca_res[pca_res$Concentration=="L"& !is.na(pca_res$Concentration),], aes(x=PC1, y=PC2))+geom_point(aes(color=Time, shape=as.factor(Survive)))+theme_classic()+facet_grid(Strain~AB)+scale_color_gradient(low="blue", high="red")
+
+write.csv(pca_res, 'Dec19/NewDataDec19_code/PCA_all_RNAseq_121319.csv', row.names=F)
+
+```
+
+
+(3D visualization is done in MATLAB)
+
+For the trajectories, we use 6 timepoints, dividing the whole trajectory into 6. For instance, if the final timepoint is 240min, the trajectory will have time = 40,80,120,160,200,240. 
+```{R}
+
+oldpt1 <- c("T4_KAN-30", "T4_KAN-60", "T4_KAN-150", "T4_KAN-180",
+            "T4_LVX-120",
+            "T4_PEN-30", "T4_PEN-60", "T4_PEN-90",
+            "T4_RIF-30", "T4_RIF-60", "T4_RIF-90",
+            "T4_VNC-30", "T4_VNC-60", "T4_VNC-60", "T4_VNC-60",
+            "19F_KAN-30", "19F_KAN-60", "19F_KAN-150", "19F_KAN-180",
+            "19F_LVX-30", "19F_LVX-60", "19F_LVX-150", "19F_LVX-180",
+            "19F_PEN-30", "19F_PEN-60", "19F_PEN-90",
+            "19F_RIF-30", "19F_RIF-60", "19F_RIF-90",
+            "19F_VNC-30", "19F_VNC-60", "19F_VNC-90",
+            "T4_CEF-30", "T4_CEF-30", "T4_CEF-30", "T4_CEF-30", "T4_CEF-30", 
+            "T4_CIP-30", "T4_CIP-30", "T4_CIP-30", "T4_CIP-30", "T4_CIP-30", 
+            "T4_TET-30", "T4_TET-30", "T4_TET-30", "T4_TET-30", "T4_TET-30", 
+            "19F_CEF22-30", "19F_CEF22-30", "19F_CEF22-30", "19F_CEF22-30", "19F_CEF22-30", 
+            "19F_CIP-30", "19F_CIP-30", "19F_CIP-30", "19F_CIP-30", "19F_CIP-30", 
+            "19F_TET22-30", "19F_TET22-30", "19F_TET22-30", "19F_TET22-30", "19F_TET22-30",
+            "T4_CFT-30", "T4_CFT-30", "T4_CFT-30", "T4_CFT-30", "T4_CFT-30", 
+            "T4_COT-30", "T4_COT-30", "T4_COT-30", "T4_COT-30", "T4_COT-30", 
+            "T4_IMI-30", "T4_IMI-30", "T4_IMI-30", "T4_IMI-30", "T4_IMI-30",
+            "T4_LIN-30", "T4_LIN-30", "T4_LIN-30", "T4_LIN-30", "T4_LIN-30",
+            "T4_MOX-30", "T4_MOX-30", "T4_MOX-30", "T4_MOX-30", "T4_MOX-30",
+            "T4_AMX-30", "T4_AMX-30", "T4_AMX-30", "T4_AMX-30", "T4_AMX-30", 
+            "T4_TOB-30", "T4_TOB-30", "T4_TOB-30", "T4_TOB-30", "T4_TOB-30"
+            )
+oldpt2 <- c("T4_KAN-45", "T4_KAN-90", "T4_KAN-180", "T4_KAN-210",
+            "T4_LVX-180",
+            "T4_PEN-45", "T4_PEN-90", "T4_PEN-120",
+            "T4_RIF-45", "T4_RIF-90", "T4_RIF-120",
+            "T4_VNC-45", "T4_VNC-90", "T4_VNC-90", "T4_VNC-90",
+            "19F_KAN-45", "19F_KAN-90", "19F_KAN-180", "19F_KAN-210",
+            "19F_LVX-60", "19F_LVX-90", "19F_LVX-180", "19F_LVX-210",
+            "19F_PEN-45", "19F_PEN-90", "19F_PEN-120",
+            "19F_RIF-45", "19F_RIF-90", "19F_RIF-120",
+            "19F_VNC-45", "19F_VNC-90", "19F_VNC-120",
+            "T4_CEF-120", "T4_CEF-120", "T4_CEF-120", "T4_CEF-120", "T4_CEF-120",
+            "T4_CIP-120", "T4_CIP-120", "T4_CIP-120", "T4_CIP-120", "T4_CIP-120",
+            "T4_TET-120", "T4_TET-120", "T4_TET-120", "T4_TET-120", "T4_TET-120",
+            "19F_CEF22-120", "19F_CEF22-120", "19F_CEF22-120", "19F_CEF22-120", "19F_CEF22-120",
+            "19F_CIP-120", "19F_CIP-120", "19F_CIP-120", "19F_CIP-120", "19F_CIP-120",
+            "19F_TET22-120", "19F_TET22-120", "19F_TET22-120", "19F_TET22-120", "19F_TET22-120",
+            "T4_CFT-120", "T4_CFT-120", "T4_CFT-120", "T4_CFT-120", "T4_CFT-120",
+            "T4_COT-120", "T4_COT-120", "T4_COT-120", "T4_COT-120", "T4_COT-120",
+            "T4_IMI-120", "T4_IMI-120", "T4_IMI-120", "T4_IMI-120", "T4_IMI-120",
+            "T4_LIN-120", "T4_LIN-120", "T4_LIN-120", "T4_LIN-120", "T4_LIN-120", 
+            "T4_MOX-120", "T4_MOX-120", "T4_MOX-120", "T4_MOX-120", "T4_MOX-120",
+            "T4_AMX-120", "T4_AMX-120", "T4_AMX-120", "T4_AMX-120", "T4_AMX-120",
+            "T4_TOB-120", "T4_TOB-120", "T4_TOB-120", "T4_TOB-120", "T4_TOB-120"
+            )
+newpt <- c("T4_KAN-40", "T4_KAN-80", "T4_KAN-160", "T4_KAN-200",
+           "T4_LVX-150",
+           "T4_PEN-40", "T4_PEN-80", "T4_PEN-100",
+           "T4_RIF-40", "T4_RIF-80", "T4_RIF-100",
+           "T4_VNC-40", "T4_VNC-80", "T4_VNC-100", "T4_VNC-120",
+           "19F_KAN-40", "19F_KAN-80", "19F_KAN-160", "19F_KAN-200",
+           "19F_LVX-40", "19F_LVX-80", "19F_LVX-160", "19F_LVX-200",
+           "19F_PEN-40", "19F_PEN-80", "19F_PEN-100",
+           "19F_RIF-40", "19F_RIF-80", "19F_RIF-100",
+           "19F_VNC-40", "19F_VNC-80", "19F_VNC-100",
+           "T4_CEF-20", "T4_CEF-40", "T4_CEF-60", "T4_CEF-80", "T4_CEF-100",
+           "T4_CIP-20", "T4_CIP-40", "T4_CIP-60", "T4_CIP-80", "T4_CIP-100",
+           "T4_TET-20", "T4_TET-40", "T4_TET-60", "T4_TET-80", "T4_TET-100",
+           "19F_CEF22-20", "19F_CEF22-40", "19F_CEF22-60", "19F_CEF22-80", "19F_CEF22-100",
+           "19F_CIP-20", "19F_CIP-40", "19F_CIP-60", "19F_CIP-80", "19F_CIP-100",
+           "19F_TET22-20", "19F_TET22-40", "19F_TET22-60", "19F_TET22-80", "19F_TET22-100",
+           "T4_CFT-20", "T4_CFT-40", "T4_CFT-60", "T4_CFT-80", "T4_CFT-100",
+           "T4_COT-20", "T4_COT-40", "T4_COT-60", "T4_COT-80", "T4_COT-100",
+           "T4_IMI-20", "T4_IMI-40", "T4_IMI-60", "T4_IMI-80", "T4_IMI-100",
+           "T4_LIN-20", "T4_LIN-40", "T4_LIN-60", "T4_LIN-80", "T4_LIN-100",
+           "T4_MOX-20", "T4_MOX-40", "T4_MOX-60", "T4_MOX-80", "T4_MOX-100",
+           "T4_AMX-20", "T4_AMX-40", "T4_AMX-60", "T4_AMX-80", "T4_AMX-100",
+           "T4_TOB-20", "T4_TOB-40", "T4_TOB-60", "T4_TOB-80", "T4_TOB-100"
+           )
+pca_traj <- pca_res[pca_res$Name %in% oldpt1 | pca_res$Name %in% oldpt2, ]
+#add the 240 timepoints
+pca_traj <- rbind(pca_traj, pca_res[pca_res$Time==240,])
+
+
+
+infer_traj <- function(pt1, pt2, ptnew){
+  tnew <- as.numeric(unlist(strsplit(ptnew, '-'))[2])
+  t1 <- as.numeric(unlist(strsplit(pt1, '-'))[2])
+  t2 <- as.numeric(unlist(strsplit(pt2, '-'))[2])
+
+  dt1 <- tnew-t1
+  dt2 <- t2-tnew
+
+  pc1 <- pca_traj[pca_traj$Name==pt1, 15:283]
+  pc2 <- pca_traj[pca_traj$Name==pt2, 15:283]
+
+  pcnew <- (dt1*pc2 + dt2*pc1)/(dt1+dt2)
+  #return(pcnew)
+  
+  pc_metadata <- pca_traj[pca_traj$Name==pt1, 1:14]
+  pc_metadata$Time <- tnew
+  pc_metadata$Name <- ptnew
+  pcnew <- cbind(pc_metadata, pcnew)
+  return(pcnew)
+}
+
+
+for (i in c(1:length(newpt))){
+  x <- infer_traj(oldpt1[i], oldpt2[i], newpt[i])
+  pca_traj <- rbind(pca_traj, x)
+}
+
+
+
+#get the wanted timepoints
+maxtimes <- aggregate(Time~Experiment, data=pca_traj[pca_traj$Survive==0,1:14], max)
+wanted_timepoints <- c()
+for (i in 1:nrow(maxtimes)){
+  this_times <- seq(maxtimes$Time[i]/6, maxtimes$Time[i], maxtimes$Time[i]/6)
+  these_timepoints <- sapply(this_times, function(x) paste0(maxtimes$Experiment[i], '-',as.character(x)))
+  wanted_timepoints <- c(wanted_timepoints, these_timepoints)
+}
+
+
+pca_traj_sub <- pca_traj[pca_traj$Name %in% wanted_timepoints,]
+
+# for any timepoints that were not used previously, add them directly from 
+# pca_Res
+missing_timepoints <- wanted_timepoints[(wanted_timepoints %in% pca_traj_sub$Name)==F]
+pca_traj_sub <- rbind(pca_traj_sub, pca_res[pca_res$Name %in% missing_timepoints, ])
+
+# sort by experiment and time
+pca_traj_sort <- pca_traj_sub[
+  with(pca_traj_sub, order(Experiment,Time)),
+]
+
+write.csv(pca_traj_sort, 'Dec19/NewDataDec19_code/PCA_trajectories.csv')
+```
+
+```{r}
+expts <- unique(pca_traj_sort$Experiment)
+
+dists <- as.matrix(dist(pca_traj_sort[,15:283]))
+
+row.names(dists) <- pca_traj_sort$Name
+names(dists) <- pca_traj_sort$Name
+write.csv(dists, 'Dec19/NewDataDec19_code/PCA_alldists.csv')
+
+nexpt <- length(expts)
+traj_dists <- matrix(0,nexpt,nexpt)
+
+
+for (i in 1:nexpt){
+  for (j in 1:nexpt){
+    sumdist <- 0
+    for (tmix in 1:6){
+      sumdist <- sumdist + dists[6*(i-1)+tmix,6*(j-1)+tmix]
+    }
+    traj_dists[i,j] <- sumdist
+  }
+}
+
+row.names(traj_dists) <- expts
+names(traj_dists) <- expts
+write.csv(traj_dists, 'Dec19/NewDataDec19_code/PCA_traj_dists.csv')
+
+```
+
+```{r}
+library(heatmaply)
+moas <- pca_traj_sort$MOA[seq(1,132,6)]
+
+clusters <- read.csv('Dec19/NewDataDec19_code/PCA_traj_clusters.csv', header=T, stringsAsFactors = F)
+clusters_for_hm <- clusters[match(expts, clusters$Name), c('MOA', 'kmeansMatch')]
+traj_dists_df <- as.data.frame(traj_dists)
+names(traj_dists_df) <- expts
+
+
+heatmaply(traj_dists_df, col_side_colors = clusters_for_hm, file="Dec19/NewDataDec19_code/PCA_trajectory_distances.html")
+
+```
+Save all data
+```{r}
+save.image('Dec19/NewDataDec19_code/PCA.RData')
+```

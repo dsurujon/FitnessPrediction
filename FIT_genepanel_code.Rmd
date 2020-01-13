@@ -1,0 +1,325 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(eval = FALSE)
+
+require("knitr")
+opts_knit$set(root.dir = 'D:/defne/Documents/BC/TVO/TnSeq_RNASeq_Evo/New Experiments/')
+```
+
+Assemble and clean all DE data
+```{r}
+## Code copied/modified from 012419
+### L2FC for all experiments
+exptsheet <- read.csv('exptsheet121319.csv', header=T, stringsAsFactors = F)
+
+annot <- read.csv('Annotation_3Strains_Cleaned.csv', header=T, stringsAsFactors = F)
+annot_base <- annot[,c('D39.old', 'TIGR4.old', 'TAIWAN.19F.old')]
+#go through all rows in the exptsheet, read the corresponding RNAseq file, 
+# and append to annot_base (using old locus tags)
+for (i in c(1:nrow(exptsheet))){
+  
+  rnafilename <- exptsheet$RNAseqFile[i]
+  strain <- exptsheet$Strain[i]
+  #make a unique name for this experiment
+  exptname <- exptsheet$Name[i]
+  print(exptname)
+  f<- read.csv(rnafilename, header=T, stringsAsFactors = F)
+  #select relevat columns
+  fsub <- f[,c('Gene', 'log2FoldChange')]
+  f$log2FoldChange <- as.numeric(f$log2FoldChange)
+  names(fsub)[2] <- exptname
+  
+  if (strain=="T4"){annot_col = "TIGR4.old"}
+  else if(strain=="D39"){annot_col = "D39.old"}
+  else if(strain=="19F"){annot_col="TAIWAN.19F.old"}
+  annot_base <- merge(annot_base, fsub, by.x=annot_col, by.y="Gene", all.x=T, all.y=T, sort=F)
+  
+}
+
+genedata <- t(annot_base[complete.cases(annot_base),4:272])
+genedata <- as.matrix(as.numeric(genedata))
+genedata[is.na(genedata)]<-0
+dim(genedata) <- c(269,1520)
+```
+
+
+
+## Fitness Gene Panel
+```{r}
+
+genedata_FIT <- genedata[exptsheet$Time>50,]
+exptsheet_FIT <- exptsheet[exptsheet$Time>50,]
+#normalize the data - in genedata we have genes as columns and experiments as rows
+# each experiment should have mean 0 and sd 1
+genedata_norm <- t(apply(genedata_FIT, 1, scale))
+colnames(genedata_norm) <- annot_base[complete.cases(annot_base),'TIGR4.old']
+
+
+#######
+# use the binomial feature selection from glmnet, on only the training data
+# here I'm using the new ABX in the test set
+
+#split into train and test
+FIT_train_ix <- exptsheet_FIT$Group=="Train"
+FIT_test_ix <- exptsheet_FIT$Group!="Train"
+genedata_norm_train <- genedata_norm[FIT_train_ix,]
+names(genedata_norm_train) <- annot_base[complete.cases(annot_base),'TIGR4.old']
+genedata_norm_test <- genedata_norm[FIT_test_ix,]
+
+#without crossvalidation
+fit <- glmnet(x=genedata_norm_train, y=exptsheet_FIT$Survive[FIT_train_ix])
+#with crossvalidation
+cvfit <- cv.glmnet(x=genedata_norm_train, y=exptsheet_FIT$Survive[FIT_train_ix], nfolds = 5)
+
+lbd <- cvfit$lambda.1se
+sink('Dec19/NewDataDec19_code/FIT_Lambda.txt')
+cat(lbd)
+sink()
+
+# Lasso plot
+library(plotmo)
+svg('Dec19/NewDataDec19_code/FIT_reg_featurecoefs.svg')
+plot_glmnet(fit, xvar="lambda", label=20)
+dev.off()
+
+# Error plot for CV
+svg('Dec19/NewDataDec19_code/FIT_reg_CV_deviance.svg')
+plot(cvfit, xvar="lambda")
+dev.off()
+
+# Coefficient for best model
+# using lambda 1se
+coefs_FIT <- coef(fit, s=lbd)
+coefs_FIT_df <- data.frame('Feature'= row.names(coefs_FIT)[which(coefs_FIT!=0)],
+                       'Coefficient' = coefs_FIT[which(coefs_FIT!=0)]
+                       )
+
+coefs_FIT_df <- merge(coefs_FIT_df, annot, by.x = "Feature", by.y = "TIGR4.old", all.x=T, sort=F)
+write.csv(coefs_FIT_df, 'Dec19/NewDataDec19_code/FIT_coefficient_lambda1se.csv', row.names=F)
+
+## Prepare data for heatmaps
+library(heatmaply)
+relevantgenes_FIT <-as.character(coefs_FIT_df$Feature[!is.na(coefs_FIT_df$TAIWAN.19F.new)])
+
+genedata_FIT_mx <- genedata_FIT
+colnames(genedata_FIT_mx) <- annot_base[complete.cases(annot_base),'TIGR4.old']
+relevantgenedata_FIT <- genedata_FIT_mx[,relevantgenes_FIT]
+row.names(relevantgenedata_FIT) <- exptsheet_FIT$Name
+heatmaply(t(relevantgenedata_FIT), col_side_colors = exptsheet_FIT[,c('AB','MOA', 'Survive')], 
+          #scale_fill_gradient_fun = ggplot2::scale_fill_gradient2(low = "blue", high = "red", midpoint = 0, limits = c(-4,10)),
+          dendrogram="both", file = "Dec19/NewDataDec19_code/FITpanel.html")
+heatmaply(t(relevantgenedata_FIT[FIT_train_ix,]), col_side_colors = exptsheet_FIT[FIT_train_ix,c('AB','MOA', 'Survive')], 
+          #scale_fill_gradient_fun = ggplot2::scale_fill_gradient2(low = "blue", high = "red", midpoint = 0, limits = c(-4,10)),
+          dendrogram="both", file = "Dec19/NewDataDec19_code/FITpanel_train.html")
+heatmaply(t(relevantgenedata_FIT[FIT_test_ix,]), col_side_colors = exptsheet_FIT[FIT_test_ix,c('AB','MOA', 'Survive')], 
+          #scale_fill_gradient_fun = ggplot2::scale_fill_gradient2(low = "blue", high = "red", midpoint = 0, limits = c(-4,10)),
+          dendrogram="both", file = "Dec19/NewDataDec19_code/FITpanel_test.html")
+
+
+# Performance statistics on training and test data
+# with the selected regularization strength
+sink('Dec19/NewDataDec19_code/FIT_genepanel_glm_predictions.txt')
+# prediction results
+real_output_train <- as.logical(exptsheet_FIT$Survive[FIT_train_ix])
+prediction_train <- predict(fit, genedata_FIT[FIT_train_ix,], lbd)
+predict_output_train <- as.logical(prediction_train>0.5)
+cm_train <- confusionMatrix(factor(predict_output_train, levels=c("TRUE", "FALSE")), as.factor(real_output_train))
+
+real_output_test <- as.logical(exptsheet_FIT$Survive[FIT_test_ix])
+prediction_test <- predict(fit, genedata_FIT[FIT_test_ix,], lbd)
+predict_output_test <- as.logical(prediction_test>0.5)
+cm_test <- confusionMatrix(factor(predict_output_test, levels=c("TRUE", "FALSE")), as.factor(real_output_test))
+
+cat('TRAINING SET\n')
+print(cm_train)
+cat('\n\n\n')
+cat('TEST SET\n')
+print(cm_test)
+cat('\n\n\n')
+
+sink()
+
+
+
+#Performance statistics for all lambda values  -test set
+cm_alldata_test <- data.frame()
+for (i in fit$lambda){
+  prediction <- predict(fit, genedata_FIT[FIT_test_ix,], s = i)
+  predict_output <- as.logical(prediction>0.5)
+  cm <- confusionMatrix(factor(predict_output, levels=c("TRUE", "FALSE")), as.factor(real_output_test))
+  cmdata <- data.frame(t(cm$byClass))
+  cmdata['Rho'] <- i
+  cm_alldata_test <- rbind(cm_alldata_test, cmdata)
+}
+write.csv(cm_alldata_test, 'Dec19/NewDataDec19_code/FIT_genepanel_performance_allrho_test.csv', row.names=F)
+
+#for training set
+cm_alldata_train <- data.frame()
+for (i in fit$lambda){
+  prediction <- predict(fit, genedata_FIT[FIT_train_ix,], s = i)
+  predict_output <- as.logical(prediction>0.5)
+  cm <- confusionMatrix(factor(predict_output, levels=c("TRUE", "FALSE")), as.factor(real_output_train))
+  cmdata <- data.frame(t(cm$byClass))
+  cmdata['Rho'] <- i
+  cm_alldata_train <- rbind(cm_alldata_train, cmdata)
+}
+write.csv(cm_alldata_train, 'Dec19/NewDataDec19_code/FIT_genepanel_performance_allrho_train.csv', row.names=F)
+
+
+cm_alldata_train$Group <- "Train"
+cm_alldata_test$Group <- "Test"
+cm_alldata <- rbind(cm_alldata_train, cm_alldata_test)
+ggplot(cm_alldata, aes(x=log(Rho), y=`Balanced.Accuracy`, color=Group))+geom_line()+theme_bw()
+ggsave('Dec19/newABX_in_test/FIT_genepanel_balanced_acc_allrho_log.svg', width=6, height=4)
+
+```
+
+
+Comparison of features selected in the crossvalidation - are the same features being selected? 
+```{r}
+# using only the best lambda, and also keeping the folds data
+
+cv.glm.def <- function(x,y,lambda,geneset, nfolds=5){
+  N = nrow(x)
+  y = drop(y)
+  foldid = sample(rep(seq(nfolds), length = N))
+  
+  all_coefs_df <- data.frame()
+  for (i in seq(nfolds)){
+    which = foldid == i
+    if (is.matrix(y)){y_sub = y[!which, ]}
+    else {y_sub = y[!which]}
+    thisfit <- glmnet(x[!which, , drop = FALSE], y_sub, lambda = lambda)
+    coef(fit, s=cvfit$lambda.1se)
+    
+    this_coefs <- coef(thisfit, s=lambda)
+    selectgenes <- row.names(this_coefs) %in% geneset
+    this_coefs_df <- data.frame('Feature'= row.names(this_coefs)[which(selectgenes)],
+                         'Coefficient' = this_coefs[which(selectgenes)],
+                         'Fold'=i)
+    all_coefs_df <- rbind(all_coefs_df, this_coefs_df)
+  }
+  return(all_coefs_df)
+}
+
+
+cv_coefs <- cv.glm.def(x=genedata_norm_train, y=exptsheet_FIT$Survive[FIT_train_ix], lambda = lbd, geneset = relevantgenes_FIT)
+coefs_FIT_sub <- coefs_FIT_df[,c(1:2)]
+coefs_FIT_sub$Fold <- 0
+cv_coefs <- rbind(cv_coefs, coefs_FIT_sub)
+write.csv(cv_coefs, 'Dec19/NewDataDec19_code/FIT_Feature_coefficients_CV.csv', row.names=F)
+
+
+cv_coefs_nonzero <- aggregate(Coefficient~Feature, cv_coefs[cv_coefs$Fold!=0,], function(x) sum(x!=0))
+ggplot(cv_coefs_nonzero, aes(x=Coefficient))+geom_bar(stat="count")+theme_bw()+xlab("Feature prevalence")
+ggsave('Dec19/NewDataDec19_code/FIT_Feature_prevalence.svg', width=5, height=5)
+```
+
+
+How much is the performance affected by what's included in the training data?
+What happens if we omit use one MOA to train and another to test?
+```{r}
+
+#split previous tranining set into train and test
+FIT_train_ix_2 <- exptsheet_FIT$Group=="Train" & exptsheet_FIT$MOA=="CWSI"
+FIT_test_ix_2 <- exptsheet_FIT$Group=="Train" & exptsheet_FIT$MOA=="DSI"
+
+genedata_norm_train_2 <- genedata_norm[FIT_train_ix_2,]
+colnames(genedata_norm_train_2) <- annot_base[complete.cases(annot_base),'TIGR4.old']
+genedata_norm_test_2 <- genedata_norm[FIT_test_ix_2,]
+
+#without crossvalidation
+fit2 <- glmnet(x=genedata_norm_train_2, y=exptsheet_FIT$Survive[FIT_train_ix_2])
+#with crossvalidation
+cvfit2 <- cv.glmnet(x=genedata_norm_train_2, y=exptsheet_FIT$Survive[FIT_train_ix_2], nfolds = 5)
+
+lbd2 <- cvfit2$lambda.1se
+
+
+# Performance statistics on training and test data
+# with the selected regularization strength
+sink('Dec19/NewDataDec19_code/FIT_genepanel2_glm_predictions.txt')
+# prediction results
+real_output_train2 <- as.logical(exptsheet_FIT$Survive[FIT_train_ix_2])
+prediction_train2 <- predict(fit2, genedata_FIT[FIT_train_ix_2,], lbd2)
+predict_output_train2 <- as.logical(prediction_train2>0.5)
+cm_train2 <- confusionMatrix(factor(predict_output_train2, levels=c("TRUE", "FALSE")), as.factor(real_output_train2))
+
+real_output_test2 <- as.logical(exptsheet_FIT$Survive[FIT_test_ix_2])
+prediction_test2 <- predict(fit2, genedata_FIT[FIT_test_ix_2,], lbd)
+predict_output_test2 <- as.logical(prediction_test2>0.5)
+cm_test2 <- confusionMatrix(factor(predict_output_test2, levels=c("TRUE", "FALSE")), as.factor(real_output_test2))
+
+cat('TRAINING SET\n')
+print(cm_train2)
+cat('\n\n\n')
+cat('TEST SET\n')
+print(cm_test2)
+cat('\n\n\n')
+
+sink()
+
+```
+
+
+Try all combinations of MOA for training and test
+```{r}
+moa_specific_fitpanel <- function(moa1, moa2){
+  #split previous tranining set into train and test
+  FIT_train_ix_2 <- exptsheet_FIT$Group=="Train" & exptsheet_FIT$MOA==moa1
+  FIT_test_ix_2 <- exptsheet_FIT$Group=="Train" & exptsheet_FIT$MOA==moa2
+  
+  genedata_norm_train_2 <- genedata_norm[FIT_train_ix_2,]
+  colnames(genedata_norm_train_2) <- annot_base[complete.cases(annot_base),'TIGR4.old']
+  genedata_norm_test_2 <- genedata_norm[FIT_test_ix_2,]
+  
+  #without crossvalidation
+  fit2 <- glmnet(x=genedata_norm_train_2, y=exptsheet_FIT$Survive[FIT_train_ix_2])
+  #with crossvalidation
+  cvfit2 <- cv.glmnet(x=genedata_norm_train_2, y=exptsheet_FIT$Survive[FIT_train_ix_2], nfolds = 5)
+  
+  lbd2 <- cvfit2$lambda.1se
+  
+  real_output_train2 <- as.logical(exptsheet_FIT$Survive[FIT_train_ix_2])
+  prediction_train2 <- predict(fit2, genedata_FIT[FIT_train_ix_2,], lbd2)
+  predict_output_train2 <- as.logical(prediction_train2>0.5)
+  cm_train2 <- confusionMatrix(factor(predict_output_train2, levels=c("TRUE", "FALSE")), as.factor(real_output_train2))
+  
+  real_output_test2 <- as.logical(exptsheet_FIT$Survive[FIT_test_ix_2])
+  prediction_test2 <- predict(fit2, genedata_FIT[FIT_test_ix_2,], lbd)
+  predict_output_test2 <- as.logical(prediction_test2>0.5)
+  cm_test2 <- confusionMatrix(factor(predict_output_test2, levels=c("TRUE", "FALSE")), as.factor(real_output_test2))
+  
+  cmdata <- data.frame(t(cm_train2$byClass))
+  cmdata <- rbind(cmdata, data.frame(t(cm_test2$byClass)))
+  cmdata['MOAtrain'] <- moa1
+  cmdata['MOAtest'] <- moa2
+  cmdata['Group'] <- c('Train', 'Test')
+  return(cmdata)
+  
+}
+cm_alldata2 <- data.frame()
+moa1list <- c('CWSI', 'CWSI', 'CWSI',  
+              'DSI', 'DSI', 'DSI', 
+              'RSI', 'RSI', 'RSI', 
+              'PSI', 'PSI', 'PSI')
+moa2list <- c('DSI', 'RSI', 'PSI', 
+              'CWSI', 'RSI', 'PSI', 
+              'CWSI', 'DSI', 'PSI',
+              'CWSI', 'DSI', 'RSI')
+for (i in c(1:12)){
+  cmdata <- moa_specific_fitpanel(moa1list[i], moa2list[i])
+  cm_alldata2 <- rbind(cm_alldata2, cmdata)}
+write.csv(cm_alldata2,'Dec19/NewDataDec19_code/performance_traintest_split_MOA.csv',row.names=F)
+```
+
+Save all data
+```{r}
+save.image('Dec19/NewDataDec19_code/FIT_genepanel.RData')
+```

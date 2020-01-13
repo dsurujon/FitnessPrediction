@@ -1,0 +1,244 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(eval = FALSE)
+
+require("knitr")
+opts_knit$set(root.dir = 'D:/defne/Documents/BC/TVO/TnSeq_RNASeq_Evo/New Experiments/')
+```
+
+Assemble and clean all DE data
+```{r}
+## Code copied/modified from 012419
+### L2FC for all experiments
+exptsheet <- read.csv('exptsheet121319.csv', header=T, stringsAsFactors = F)
+
+annot <- read.csv('Annotation_3Strains_Cleaned.csv', header=T, stringsAsFactors = F)
+annot_base <- annot[,c('D39.old', 'TIGR4.old', 'TAIWAN.19F.old')]
+#go through all rows in the exptsheet, read the corresponding RNAseq file, 
+# and append to annot_base (using old locus tags)
+for (i in c(1:nrow(exptsheet))){
+  
+  rnafilename <- exptsheet$RNAseqFile[i]
+  strain <- exptsheet$Strain[i]
+  #make a unique name for this experiment
+  exptname <- exptsheet$Name[i]
+  print(exptname)
+  f<- read.csv(rnafilename, header=T, stringsAsFactors = F)
+  #select relevat columns
+  fsub <- f[,c('Gene', 'log2FoldChange')]
+  f$log2FoldChange <- as.numeric(f$log2FoldChange)
+  names(fsub)[2] <- exptname
+  
+  if (strain=="T4"){annot_col = "TIGR4.old"}
+  else if(strain=="D39"){annot_col = "D39.old"}
+  else if(strain=="19F"){annot_col="TAIWAN.19F.old"}
+  annot_base <- merge(annot_base, fsub, by.x=annot_col, by.y="Gene", all.x=T, all.y=T, sort=F)
+  
+}
+
+genedata <- t(annot_base[complete.cases(annot_base),4:272])
+genedata <- as.matrix(as.numeric(genedata))
+genedata[is.na(genedata)]<-0
+dim(genedata) <- c(269,1520)
+```
+
+
+## MOA gene panel
+```{r}
+#######
+# use the multinomial feature selection from glmnet, on only the training data
+# here I'm using the new ABX in the training data as well
+
+genedata_MOA_all <- genedata[exptsheet$MOA!="NTR" & exptsheet$Survive==0 & exptsheet$Time>50,]
+names(genedata_MOA_all) <- annot_base[complete.cases(annot_base),'TIGR4.old']
+exptsheet_MOA_all <- exptsheet[exptsheet$MOA!="NTR" & exptsheet$Survive==0 & exptsheet$Time>50,]
+#normalize the data - in genedata we have genes as columns and experiments as rows
+# each experiment should have mean 0 and sd 1
+genedata_norm <- t(apply(genedata_MOA_all, 1, scale))
+#split into train and test
+MOA_train_ix <- exptsheet_MOA_all$Group=="Train"
+MOA_test_ix <- exptsheet_MOA_all$Group!="Train"
+genedata_norm_train <- genedata_norm[MOA_train_ix,]
+colnames(genedata_norm_train) <- annot_base[complete.cases(annot_base),'TIGR4.old']
+genedata_norm_test <- genedata_norm[MOA_test_ix,]
+
+#################
+# FIT THE MODEL #
+#################
+#without crossvalidation
+fit <- glmnet(x=genedata_norm_train, y=exptsheet_MOA_all$MOA[MOA_train_ix], family = "multinomial", type.multinomial = "grouped")
+
+#with crossvalidation
+cvfit <- cv.glmnet(x=genedata_norm_train, y=exptsheet_MOA_all$MOA[MOA_train_ix], family = "multinomial", type.multinomial = "grouped", nfolds = 5)
+lbd <- cvfit$lambda.1se
+sink('Dec19/NewDataDec19_code/MOA_Lambda.txt')
+cat(lbd)
+sink()
+
+# Error plot with crossvalidation
+svg('Dec19/NewDataDec19_code/MOA_reg_CV_deviance.svg')
+plot(cvfit, xvar="lambda")
+dev.off()
+
+# Lasso plots for each MOA
+library(plotmo)
+svg('Dec19/NewDataDec19_code/MOA_reg_featurecoefs_CWSI.svg')
+plot_glmnet(fit, xvar="lambda", label=20, nresponse=1)
+dev.off()
+svg('Dec19/NewDataDec19_code/MOA_reg_featurecoefs_DSI.svg')
+plot_glmnet(fit, xvar="lambda", label=20, nresponse=2)
+dev.off()
+svg('Dec19/NewDataDec19_code/MOA_reg_featurecoefs_PSI.svg')
+plot_glmnet(fit, xvar="lambda", label=20, nresponse=3)
+dev.off()
+svg('Dec19/NewDataDec19_code/MOA_reg_featurecoefs_RSI.svg')
+plot_glmnet(fit, xvar="lambda", label=20, nresponse=4)
+dev.off()
+
+# Coefficient for best model
+# using lambda 1se
+coefs_MOA <- coef(fit, s=lbd)
+coefs_MOA_df <- data.frame('Feature'= row.names(coefs_MOA$CWSI)[which(coefs_MOA$CWSI!=0)],
+                       'Coefficient.CWSI' = coefs_MOA$CWSI[which(coefs_MOA$CWSI!=0)],
+                       'Coefficient.DSI' = coefs_MOA$DSI[which(coefs_MOA$DSI!=0)],
+                       'Coefficient.PSI' = coefs_MOA$PSI[which(coefs_MOA$PSI!=0)],
+                       'Coefficient.RSI' = coefs_MOA$RSI[which(coefs_MOA$RSI!=0)]
+                       )
+
+coefs_MOA_df <- merge(coefs_MOA_df, annot, by.x = "Feature", by.y = "TIGR4.old", all.x=T, sort=F)
+write.csv(coefs_MOA_df, 'Dec19/NewDataDec19_code/MOA_coefficient_lambda1se.csv', row.names=F)
+
+
+## Prepare data for heatmaps
+library(heatmaply)
+relevantgenes_MOA <-as.character(coefs_MOA_df$Feature[!is.na(coefs_MOA_df$TAIWAN.19F.new)])
+
+genedata_MOA_mx <- genedata_MOA_all
+colnames(genedata_MOA_mx) <- annot_base[complete.cases(annot_base),'TIGR4.old']
+relevantgenedata_MOA <- genedata_MOA_mx[,relevantgenes_MOA]
+row.names(relevantgenedata_MOA) <- exptsheet_MOA_all$Name
+heatmaply(t(relevantgenedata_MOA), col_side_colors = exptsheet_MOA_all[,c('AB','MOA')], 
+          #scale_fill_gradient_fun = ggplot2::scale_fill_gradient2(low = "blue", high = "red", midpoint = 0, limits = c(-4,10)),
+          dendrogram="both", file = "Dec19/NewDataDec19_code/MOApanel.html")
+
+heatmaply(t(relevantgenedata_MOA[MOA_train_ix,]), col_side_colors = exptsheet_MOA_all[MOA_train_ix,c('AB','MOA')], 
+          #scale_fill_gradient_fun = ggplot2::scale_fill_gradient2(low = "blue", high = "red", midpoint = 0, limits = c(-4,10)),
+          dendrogram="both", file = "Dec19/NewDataDec19_code/MOApanel_train.html")
+		  
+heatmaply(t(relevantgenedata_MOA[MOA_test_ix,]), col_side_colors = exptsheet_MOA_all[MOA_test_ix,c('AB','MOA')], 
+          #scale_fill_gradient_fun = ggplot2::scale_fill_gradient2(low = "blue", high = "red", midpoint = 0, limits = c(-4,10)),
+          dendrogram="both", file = "Dec19/NewDataDec19_code/MOApanel_test.html")
+
+
+# Performance statistics on training and test data
+# with the selected regularization strength
+sink('Dec19/NewDataDec19_code/MOA_genepanel_glm_predictions.txt')
+# prediction results
+real_output_train <- exptsheet_MOA_all$MOA[MOA_train_ix]
+prediction_train <- predict(fit, genedata_MOA_all[MOA_train_ix,], lbd)
+predict_output_train <- c('CWSI', 'DSI', 'PSI', 'RSI')[apply(prediction_train, 1, which.max)]
+cm_train <- confusionMatrix(as.factor(predict_output_train[real_output_train!="LIP"]), as.factor(real_output_train[real_output_train!="LIP"]))
+
+real_output_test <- exptsheet_MOA_all$MOA[MOA_test_ix]
+prediction_test <- predict(fit, genedata_MOA_all[MOA_test_ix,], lbd)
+predict_output_test <- c('CWSI', 'DSI', 'PSI', 'RSI')[apply(prediction_test, 1, which.max)]
+cm_test <- confusionMatrix(as.factor(predict_output_test[real_output_test!="LIP"]), as.factor(real_output_test[real_output_test!="LIP"]))
+
+cat('TRAINING SET\n')
+print(cm_train)
+cat('\n\n\n')
+cat('TEST SET\n')
+print(cm_test)
+cat('\n\n\n')
+
+sink()
+
+
+#Performance statistics for all lambda values  -test set
+cm_alldata <- data.frame()
+for (i in fit$lambda){
+  prediction <- predict(fit, genedata_norm_test, s = i)
+  predict_output <- c('CWSI', 'DSI', 'PSI', 'RSI')[apply(prediction, 1, which.max)]
+  cm <- confusionMatrix(as.factor(predict_output[real_output_test!="LIP"]), as.factor(real_output_test[real_output_test!="LIP"]))
+  cm_data <- as.data.frame(cm$byClass)
+  cm_data$Class <- sapply(row.names(cm$byClass), function(x){unlist(strsplit(x,"[:]"))[2]})
+  cm_data$Rho <- i
+  cm_alldata <- rbind(cm_alldata, cm_data)
+}
+write.csv(cm_alldata, 'Dec19/NewDataDec19_code/MOA_genepanel_performance_allrho_test.csv', row.names=F)
+
+#for training set
+cm_alldata_train <- data.frame()
+for (i in fit$lambda){
+  prediction <- predict(fit, genedata_norm_train, s = i)
+  predict_output <- c('CWSI', 'DSI', 'PSI', 'RSI')[apply(prediction, 1, which.max)]
+  cm <- confusionMatrix(as.factor(predict_output), as.factor(real_output_train))
+  cm_data <- as.data.frame(cm$byClass)
+  cm_data$Class <- sapply(row.names(cm$byClass), function(x){unlist(strsplit(x,"[:]"))[2]})
+  cm_data$Rho <- i
+  cm_alldata_train <- rbind(cm_alldata_train, cm_data)
+}
+write.csv(cm_alldata_train, 'Dec19/NewDataDec19_code/MOA_genepanel_performance_allrho_train.csv', row.names=F)
+
+
+# plot balanced accuracy for all regularization values
+ggplot(cm_alldata, aes(x=Rho, y=`Balanced Accuracy`, color=Class))+geom_line()+theme_bw()
+ggsave('Dec19/NewDataDec19_code/MOA_genepanel_balanced_acc_allrho_test.svg', width=6, height=4)
+
+ggplot(cm_alldata_train, aes(x=Rho, y=`Balanced Accuracy`, color=Class))+geom_line()+theme_bw()
+ggsave('Dec19/NewDataDec19_code/MOA_genepanel_balanced_acc_allrho_train.svg', width=6, height=4)
+```
+
+Comparison of features selected in the crossvalidation - are the same features being selected? 
+```{r}
+# using only the best lambda, and also keeping the folds data
+
+cv.glm.def <- function(x,y,lambda,geneset, family="multinomial", type.multinomial="grouped", nfolds=5){
+  N = nrow(x)
+  y = drop(y)
+  foldid = sample(rep(seq(nfolds), length = N))
+  
+  all_coefs_df <- data.frame()
+  for (i in seq(nfolds)){
+    which = foldid == i
+    if (is.matrix(y)){y_sub = y[!which, ]}
+    else {y_sub = y[!which]}
+    thisfit <- glmnet(x[!which, , drop = FALSE], y_sub, lambda = lambda, family = "multinomial", type.multinomial = "grouped")
+    coef(fit, s=cvfit$lambda.1se)
+    
+    this_coefs_MOA <- coef(thisfit, s=lambda)
+    selectgenes <- row.names(this_coefs_MOA$CWSI) %in% geneset
+    this_coefs_MOA_df <- data.frame('Feature'= row.names(this_coefs_MOA$CWSI)[which(selectgenes)],
+                         'Coefficient.CWSI' = this_coefs_MOA$CWSI[which(selectgenes)],
+                         'Coefficient.DSI' = this_coefs_MOA$DSI[which(selectgenes)],
+                         'Coefficient.PSI' = this_coefs_MOA$PSI[which(selectgenes)],
+                         'Coefficient.RSI' = this_coefs_MOA$RSI[which(selectgenes)],
+                         'Fold'=i)
+    all_coefs_df <- rbind(all_coefs_df, this_coefs_MOA_df)
+  }
+  return(all_coefs_df)
+}
+
+
+cv_coefs <- cv.glm.def(x=genedata_norm_train, y=exptsheet_MOA_all$MOA[MOA_train_ix], lambda = lbd, geneset = relevantgenes_MOA)
+coefs_MOA_sub <- coefs_MOA_df[,c(1:5)]
+coefs_MOA_sub$Fold <- 0
+cv_coefs <- rbind(cv_coefs, coefs_MOA_sub)
+write.csv(cv_coefs, 'Dec19/NewDataDec19_code/MOA_Feature_coefficients_CV.csv', row.names=F)
+cv_coefs_long <- gather(cv_coefs, MOA, Coefficient, Coefficient.CWSI:Coefficient.RSI, factor_key=TRUE)
+
+cv_coefs_nonzero <- aggregate(Coefficient~MOA*Feature, cv_coefs_long[cv_coefs_long$Fold!=0,], function(x) sum(x!=0))
+ggplot(cv_coefs_nonzero, aes(x=Coefficient))+geom_bar(stat="count")+theme_bw()+xlab("Feature prevalence")
+ggsave('Dec19/NewDataDec19_code/MOA_Feature_prevalence.svg', width=5, height=5)
+```
+
+Save all data
+```{r}
+save.image('Dec19/NewDataDec19_code/MOA_genepanel.RData')
+```
