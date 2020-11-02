@@ -14,3 +14,15 @@ Rscript entropy.R /store/data/ExpOut/200813_NS500751_0168_AH5FYGBGXF/Out/Rep/Cha
 ```
 
 **Make sure that the only csv files in the input directory are DEseq2 output!**
+
+
+## Computing category-specific standard deviation (as a surrogate for entropy)
+General usage:
+```
+Rscript category_specific_SD.R [inputfile] [outputfile] [fill NA (T/F)]
+```
+
+The script `category_specific_SD.R` takes 3 arguments: 
+* `inputfile`: csv file with annotation and RNAseq data. The first 18 columns MUST be the annotation, and the remaining columns must be the differential expression data (one column per experiment). Each row is a gene. 
+* `outputfile`: csv file name for the output. For each category (rows) the SD of Differential expression in each experiment (columns) is reported. 
+* `fill NA`: True or False. If True, missing (or NA) values will be replaced with 0 (i.e. no differential expression)
